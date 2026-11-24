@@ -9,3 +9,4 @@ dist-ssr
 .vite
 .vite-tmp
 tsconfig.tsbuildinfo
+.vscode/
