@@ -119,6 +119,36 @@ button {
   color: inherit;
 }
 
+/* ------------------------------------------------------------
+   可点击元素的鼠标指针：不依赖各组件是否记得写 cursor: pointer，
+   统一在此兜底，避免"看起来能点、光标却没反应"。
+   ------------------------------------------------------------ */
+button:not(:disabled),
+select:not(:disabled),
+[role='button'],
+[role='tab'],
+summary,
+label.checkbox,
+label.member,
+a[href] {
+  cursor: pointer;
+}
+
+button:disabled,
+select:disabled {
+  cursor: not-allowed;
+}
+
+input[type='checkbox'],
+input[type='radio'] {
+  cursor: pointer;
+}
+
+input[type='checkbox']:disabled {
+  cursor: not-allowed;
+}
+
+
 code,
 pre,
 kbd {

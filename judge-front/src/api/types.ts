@@ -34,19 +34,22 @@ export type VersionStatus = 'DRAFT' | 'VALIDATING' | 'READY'
 export type Difficulty = 'EASY' | 'MEDIUM' | 'HARD'
 export type CheckerType = 'EXACT' | 'TOKENS'
 
+/** 源码长度上限（UTF-8 字节），与后端 submission.source_code 的约束一致。 */
+export const SOURCE_CODE_LIMIT_BYTES = 65536
+
 /** 本期支持的语言；考试发布后 allowedLanguages 固定，练习默认全部可用。 */
 export type Language = 'CPP17' | 'C11' | 'PY3' | 'JAVA17'
 
 export const LANGUAGE_LABEL: Record<Language, string> = {
-  CPP17: 'C++17',
-  C11: 'C11',
+  CPP17: 'C++ (g++)',
+  C11: 'C (gcc)',
   PY3: 'Python 3',
   JAVA17: 'Java 17'
 }
 
 export const LANGUAGE_OPTIONS: { value: Language; label: string; note: string }[] = [
-  { value: 'CPP17', label: 'C++17', note: 'g++ 13 · -O2 -std=c++17' },
-  { value: 'C11', label: 'C11', note: 'gcc 13 · -O2 -std=c11' },
+  { value: 'CPP17', label: 'C++ (g++)', note: 'g++ 13 · -O2 -std=c++17' },
+  { value: 'C11', label: 'C (gcc)', note: 'gcc 13 · -O2 -std=c11' },
   { value: 'PY3', label: 'Python 3', note: 'CPython 3.11 · 仅标准库' },
   { value: 'JAVA17', label: 'Java 17', note: 'OpenJDK 17 · Main 类' }
 ]
@@ -113,6 +116,11 @@ export interface ProblemDetail {
   /** 是否处于考试上下文；决定反馈策略 */
   feedbackPolicy: 'FULL' | 'VERDICT_ONLY'
   hasVisibleCases: boolean
+  /** 题目作者（出题教师）与所属单位，用于题头展示 */
+  ownerName: string
+  organization: string
+  /** 考试上下文中该题的分值；练习为 null */
+  fullScore: number | null
 }
 
 export interface CaseMeta {
@@ -213,6 +221,10 @@ export interface SubmissionDetail {
   cases: CaseResultView[]
   attempts: AttemptView[]
   compileLog: string | null
+  /** 判定依据的一句话说明，例如「第 3 个测试点 int 溢出」 */
+  verdictReason: string | null
+  /** true 表示结果来自前端演示判题器，不是真实 sandbox 评测 */
+  simulated?: boolean
   /** 服务端建议的下一次轮询间隔（毫秒），用于 2s → 5s 退避（NFR-06） */
   pollAfterMs: number
   /** 只读说明：为何不能重试/重评 */
@@ -221,6 +233,7 @@ export interface SubmissionDetail {
 
 export interface SubmissionListItem {
   id: string
+  problemId: string
   problemTitle: string
   examTitle: string | null
   contextType: 'PRACTICE' | 'EXAM' | 'VALIDATION'

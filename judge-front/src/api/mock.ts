@@ -43,6 +43,7 @@ import type {
   UserSummary,
   Verdict
 } from './types'
+import { VERDICT_LABEL } from './types'
 
 /* ----------------------------- 基础工具 ----------------------------- */
 
@@ -684,82 +685,202 @@ function judgeTimeline(ms: number) {
   return { status: 'FINISHED' as SubmissionStatus, phase: null as JudgePhase | null }
 }
 
-/** 按代码特征模拟判定结果，覆盖 AC/WA/CE/TLE/MLE/RE/OLE/SYSTEM_ERROR 七类。 */
-function decideVerdict(code: string, isValidation: boolean, language: Language = 'CPP17'): Verdict {
-  const src = code
-  if (!src.trim()) return 'CE'
-  if (src.includes('infra_fail')) return 'SYSTEM_ERROR'
+/* ------------------------------------------------------------------ */
+/* 演示判题器（仅 Mock 使用）                                           */
+/*                                                                     */
+/* 前端无法真正编译执行 C++，所以这里做的是「按题目与代码特征推断判定」， */
+/* 重点覆盖每题设计的陷阱（int 溢出、O(n·q)、O(n²)、没读输入…），         */
+/* 并给出可解释的失败原因。真实判定永远在 worker + sandbox 里（§4.8.4）。  */
+/* ------------------------------------------------------------------ */
 
-  if (language === 'PY3') {
-    if (!/print\s*\(|sys\.stdout/.test(src)) return 'CE'
-    if (/while\s+True\s*:/.test(src)) return 'TLE'
-    if (/list\s*\(\s*range\s*\(\s*10\s*\*\*\s*8\s*\)\s*\)|\[0\]\s*\*\s*10\s*\*\*\s*8/.test(src)) return 'MLE'
-    if (/1\s*\/\s*0|raise\s+RuntimeError/.test(src)) return 'RE'
-    if (src.includes('infinite_output') || /while\s+True\s*:\s*print/.test(src)) return 'OLE'
-    if (/print\s*\(\s*['"]hello|print\s*\(\s*['"]wrong/.test(src)) return 'WA'
-    if (isValidation) return 'AC'
-    return /a\s*\+\s*b|int\(input|map\(int/.test(src) ? 'AC' : 'WA'
-  }
-
-  if (language === 'JAVA17' || language === 'C11') {
-    const hasEntry = language === 'JAVA17' ? /class\s+Main|static\s+void\s+main/.test(src) : /main\s*\(/.test(src)
-    if (!hasEntry) return 'CE'
-    if (/while\s*\(\s*(1|true)\s*\)|for\s*\(\s*;\s*;\s*\)/.test(src)) return 'TLE'
-    if (/new\s+long\s*\[\s*100000000\s*\]|malloc\s*\(\s*1\s*<<\s*30\s*\)|new\s+int\s*\[\s*100000000\s*\]/.test(src)) return 'MLE'
-    if (/return\s+1\s*\/\s*0|throw\s+new\s+RuntimeException/.test(src)) return 'RE'
-    if (/printf\s*\(\s*"%s"/.test(src) || src.includes('infinite_output')) return 'OLE'
-    if (src.includes('"hello"') || src.includes('"wrong"')) return 'WA'
-    if (isValidation) return 'AC'
-    return /a\s*\+\s*b|scanf|System\.out\.println\s*\(\s*a\s*\+\s*b/.test(src) ? 'AC' : 'WA'
-  }
-
-  if (!src.includes('main')) return 'CE'
-  if (/while\s*\(\s*(1|true)\s*\)|for\s*\(\s*;\s*;\s*\)/.test(src)) return 'TLE'
-  if (/new\s+long\s+long\s*\[\s*100000000\s*\]|malloc\s*\(\s*1\s*<<\s*30\s*\)|bad_alloc/.test(src)) return 'MLE'
-  if (/return\s+1\s*\/\s*0|throw\s+std::runtime_error/.test(src)) return 'RE'
-  if (/printf\s*\(\s*"%s"/.test(src) || src.includes('infinite_output')) return 'OLE'
-  if (/cout\s*<<\s*"hello"|cout\s*<<\s*"wrong"/.test(src)) return 'WA'
-  if (isValidation) return 'AC'
-  if (/a\s*\+\s*b|scanf|cpp17_demo/.test(src)) return 'AC'
-  return 'WA'
+interface MockJudgeOutcome {
+  verdict: Verdict
+  cases: CaseResultView[]
+  compileLog: string | null
+  reason: string
 }
 
-function buildCases(problem: MockProblem, verdict: Verdict, hideDetails: boolean): CaseResultView[] {
-  const version = readyVersion(problem) ?? problem.versions[0]
-  const cases = version.cases
-  if (verdict === 'CE') return []
-  const list: CaseResultView[] = []
-  let failed = false
-  for (const c of cases) {
-    const caseVerdict: Verdict = failed ? 'AC' : c.isSample ? 'AC' : 'AC'
-    if (failed) {
-      list.push({
+function judgeSource(
+  problem: MockProblem,
+  version: MockVersion,
+  language: Language,
+  source: string,
+  hideDetails: boolean,
+  isValidation = false
+): MockJudgeOutcome {
+  const src = source.replace(/\r\n/g, '\n')
+  const limits = version.limits
+  const allCases = [...version.cases].sort((a, b) => a.ordinal - b.ordinal)
+
+  const buildCases = (verdict: Verdict, failOrdinal: number | null, actual: string | null): CaseResultView[] => {
+    if (verdict === 'CE') return []
+    return allCases.map((c) => {
+      const failedHere = failOrdinal === c.ordinal
+      return {
         ordinal: c.ordinal,
-        verdict: caseVerdict,
-        cpuMs: 0,
-        memoryKb: 0,
+        verdict: failedHere ? verdict : 'AC',
+        cpuMs: failedHere && verdict === 'TLE' ? limits.timeLimitMs : 9 + c.ordinal * 6,
+        memoryKb: failedHere && verdict === 'MLE' ? limits.memoryLimitKb : 2100 + c.ordinal * 480,
         isSample: c.isSample,
-        expectedOutput: null,
-        actualOutput: null,
+        expectedOutput: !hideDetails && c.isSample ? c.expected : null,
+        actualOutput: failedHere && !hideDetails ? actual : null,
         truncated: false
-      })
-      continue
-    }
-    const isFailPoint = !failed && c.ordinal === (cases.find((x) => !x.isSample)?.ordinal ?? 1)
-    const v: Verdict = verdict === 'AC' ? 'AC' : isFailPoint ? verdict : 'AC'
-    if (v !== 'AC') failed = true
-    list.push({
-      ordinal: c.ordinal,
-      verdict: v,
-      cpuMs: v === 'TLE' ? version.limits.timeLimitMs : 12 + c.ordinal * 7,
-      memoryKb: v === 'MLE' ? version.limits.memoryLimitKb : 2048 + c.ordinal * 512,
-      isSample: c.isSample,
-      expectedOutput: !hideDetails && c.isSample ? c.expected : null,
-      actualOutput: !hideDetails && c.isSample && v !== 'AC' ? '3\n' : null,
-      truncated: false
+      }
     })
   }
-  return list
+
+  const fail = (verdict: Verdict, ordinal: number | null, reason: string, actual: string | null = null): MockJudgeOutcome => ({
+    verdict,
+    cases: buildCases(verdict, ordinal, actual),
+    compileLog: null,
+    // 考试反馈策略只给判定类型，不暴露"第几个测试点"（BR-12）
+    reason: hideDetails
+      ? `${VERDICT_LABEL[verdict]}：考试期间仅返回判定类型，不展示测试点细节`
+      : reason
+  })
+
+  const ce = (message: string, log: string): MockJudgeOutcome => ({
+    verdict: 'CE',
+    cases: [],
+    compileLog: log,
+    reason: `编译失败：${message}`
+  })
+
+  if (!src.trim()) return ce('代码为空', 'error: empty translation unit')
+
+  /* ------------------------- 编译期检查 ------------------------- */
+  if (language === 'PY3') {
+    if (!/(def\s+\w+\s*\(|print\s*\(|sys\.stdout)/.test(src)) {
+      return ce('没有可执行语句', 'SyntaxError: invalid syntax')
+    }
+    const defLine = src.match(/def\s+\w+\s*\([^)]*\)\s*$/m)
+    if (defLine) {
+      return ce(
+        '函数定义末尾缺少冒号',
+        `${defLine[0].trim()}\n${' '.repeat(defLine[0].length)}^\nSyntaxError: expected ':'`
+      )
+    }
+    if (/print\s*\(\s*\)\s*$/.test(src) && !/print\s*\(\s*\w/.test(src)) {
+      return ce('print 调用缺少参数', 'TypeError: print() missing 1 required positional argument')
+    }
+  } else if (language === 'JAVA17') {
+    if (!/class\s+Main/.test(src)) return ce('缺少 public class Main', 'error: class Main is not defined')
+    if (!/static\s+void\s+main\s*\(/.test(src)) {
+      return ce(
+        '缺少 main 方法',
+        "error: Main method not found in class Main, please define the main method as:\n   public static void main(String[] args)"
+      )
+    }
+  } else {
+    if (!/int\s+main\s*\(/.test(src)) {
+      return ce(
+        '缺少 main 函数',
+        `solution.${language === 'C11' ? 'c' : 'cpp'}:1:1: error: expected 'int main()'\n    1 | ${src.split('\n')[0].slice(0, 40)}\n      | ^`
+      )
+    }
+    const open = (src.match(/\{/g) ?? []).length
+    const close = (src.match(/\}/g) ?? []).length
+    if (open !== close) {
+      return ce(
+        '花括号不匹配',
+        `solution.${language === 'C11' ? 'c' : 'cpp'}: In function 'int main()':\nerror: expected '}' at end of input\n      | ^\n[日志已截断至 64 KB，并清除主机路径]`
+      )
+    }
+    if (/\b(cin|cout)\b/.test(src) && !/#include\s*<(iostream|bits\/stdc\+\+\.h)>/.test(src)) {
+      return ce(
+        '使用了 cin / cout 但没有包含 iostream',
+        "solution.cpp:3:5: error: 'cin' was not declared in this scope\nnote: 'std::cin' is defined in header '<iostream>'\n[日志已截断至 64 KB，并清除主机路径]"
+      )
+    }
+    if (language === 'CPP17' && /(long\s+long|int)\s+a\s*,\s*b\s*;[^\n]*\n\s*(cin|scanf)[^\n]*\n\s*(cout|printf)[^\n]*$/.test(src) && !/;/.test(src.split('\n').slice(-2).join('\n'))) {
+      return ce(
+        '语句缺少分号',
+        "solution.cpp:6:5: error: expected ';' before 'return'\n[日志已截断至 64 KB，并清除主机路径]"
+      )
+    }
+  }
+
+  /* ------------------------- 运行期明显故障 ------------------------- */
+  const lastOrdinal = allCases[allCases.length - 1]?.ordinal ?? 1
+  const firstOrdinal = allCases[0]?.ordinal ?? 1
+
+  if (src.includes('infra_fail')) {
+    return { verdict: 'SYSTEM_ERROR', cases: [], compileLog: null, reason: 'sandbox 未能启动（演示用的人工故障）' }
+  }
+  if (/while\s*\(\s*(1|true)\s*\)|while\s+True\s*:|for\s*\(\s*;\s*;\s*\)/.test(src)) {
+    return fail('TLE', lastOrdinal, '死循环：超出时间限制，被 sandbox 终止')
+  }
+  if (/new\s+(long\s+long|long|int)\s*\[\s*100000000\s*\]|malloc\s*\(\s*1\s*<<\s*30\s*\)|bad_alloc|list\s*\(\s*range\s*\(\s*10\s*\*\*\s*8/.test(src)) {
+    return fail('MLE', lastOrdinal, '内存超限：申请空间超过限制，被 cgroup 终止')
+  }
+  if (/return\s+1\s*\/\s*0|throw\s+std::runtime_error|raise\s+RuntimeError/.test(src)) {
+    return fail('RE', firstOrdinal, '运行时错误：除以零导致异常退出')
+  }
+  if (/printf\s*\(\s*"%s"\s*,\s*"[^"]*"\s*\)/.test(src) || src.includes('infinite_output')) {
+    return fail('OLE', lastOrdinal, '输出超限：输出字节数超过上限，监督进程主动终止')
+  }
+
+  /* ------------------------- 按题意检查 ------------------------- */
+  const readsInput = /cin\s*>>|scanf\s*\(|std::cin|Scanner|System\.in|sys\.stdin|input\s*\(|readline/.test(src)
+  if (!readsInput) {
+    return fail('WA', firstOrdinal, '没有读取输入：任何数据都会得到同样的输出')
+  }
+
+  const nestedLoop = /for\s*\([^)]*\)[\s\S]{0,160}?for\s*\(/.test(src) || /while\s*\([^)]*\)[\s\S]{0,160}?while\s*\(/.test(src)
+
+  if (problem.id === '1001') {
+    const usesOnlyInt = /\bint\s+(a|b|x|y|n|m)\b/.test(src) && !/\blong(\s+long|\s+int)?\b/.test(src)
+    if (!/[+]/.test(src)) {
+      return fail('WA', firstOrdinal, '没有做加法：输出与 a + b 无关')
+    }
+    if (usesOnlyInt) {
+      return fail(
+        'WA',
+        3,
+        'int 溢出：第 3 个测试点 1000000000 + 1000000000 = 2000000000 超出 int 范围（题面已提示用 long long）',
+        '-294967296\n'
+      )
+    }
+    if (nestedLoop) {
+      return fail('TLE', lastOrdinal, '简单的加法不需要循环，疑似死循环或输入读取有误')
+    }
+    return { verdict: 'AC', cases: buildCases('AC', null, null), compileLog: null, reason: '全部测试点通过' }
+  }
+
+  if (problem.id === '1002') {
+    // 先用复杂度判断，再看有没有做累加：正则兼容 pre[]、prefix、+= 等常见写法
+    if (nestedLoop) {
+      return fail('TLE', 2, '每次询问都重新累加，O(n·q) 在第 2 个测试点超时（应使用前缀和）')
+    }
+    const accumulates = /pre(fix)?\s*\[|prefix|sums?\s*\[|\+=|cum(ulative)?/.test(src)
+    if (!accumulates) {
+      return fail('WA', firstOrdinal, '没有累加区间元素，输出不是区间和')
+    }
+    return { verdict: 'AC', cases: buildCases('AC', null, null), compileLog: null, reason: '全部测试点通过' }
+  }
+
+  if (problem.id === '1003') {
+    const hasBinarySearch = /lower_bound|upper_bound|binary|bisect|二分/.test(src)
+    const hasLoop = /for\s*\(|while\s*\(/.test(src)
+    if (!hasLoop) return fail('WA', firstOrdinal, '没有遍历序列，不可能求出 LIS 长度')
+    if (nestedLoop && !hasBinarySearch) {
+      return fail('TLE', 2, 'O(n²) 做法在 n = 100000 时超时，应使用 O(n log n) 的贪心 + 二分')
+    }
+    return { verdict: 'AC', cases: buildCases('AC', null, null), compileLog: null, reason: '全部测试点通过' }
+  }
+
+  if (problem.id === '1004') {
+    if (!/[<>]|max|std::max|Math\.max/.test(src)) {
+      return fail('WA', firstOrdinal, '没有比较大小，输出不是最大值')
+    }
+    return { verdict: 'AC', cases: buildCases('AC', null, null), compileLog: null, reason: '全部测试点通过' }
+  }
+
+  if (isValidation) {
+    return { verdict: 'AC', cases: buildCases('AC', null, null), compileLog: null, reason: '参考程序通过全部测试点' }
+  }
+
+  return { verdict: 'AC', cases: buildCases('AC', null, null), compileLog: null, reason: '全部测试点通过' }
 }
 
 function submissionDetail(s: MockSubmission, viewer: MockUser): SubmissionDetail {
@@ -773,13 +894,19 @@ function submissionDetail(s: MockSubmission, viewer: MockUser): SubmissionDetail
 
   const hideDetails = s.contextType === 'EXAM' && isOwner
   const finished = live.status === 'FINISHED' || live.status === 'FAILED'
-  const verdict: Verdict | null = finished
+  const outcome = finished
     ? live.status === 'FAILED'
-      ? 'SYSTEM_ERROR'
-      : decideVerdict(s.sourceCode, false, s.language)
+      ? {
+          verdict: 'SYSTEM_ERROR' as Verdict,
+          cases: [] as CaseResultView[],
+          compileLog: null,
+          reason: 'sandbox 或基础设施未能完成评测，已自动重试并转入人工恢复'
+        }
+      : judgeSource(problem, version, s.language, s.sourceCode, hideDetails, s.contextType === 'VALIDATION')
     : null
+  const verdict: Verdict | null = outcome?.verdict ?? null
 
-  const cases = finished ? buildCases(problem, verdict as Verdict, hideDetails) : []
+  const cases = outcome?.cases ?? []
   const attempts: AttemptView[] = [
     {
       attemptNo: 1,
@@ -818,9 +945,9 @@ function submissionDetail(s: MockSubmission, viewer: MockUser): SubmissionDetail
     totalCaseCount: version.cases.length,
     cases,
     attempts,
-    compileLog: verdict === 'CE'
-      ? `solution.cpp: In function 'int main()':\nsolution.cpp:3:5: error: expected ';' before '}' token\n    3 |     return 0\n      |             ^\n      |             ;\n[日志已截断至 64 KB，并清除主机路径]`
-      : null,
+    compileLog: outcome?.compileLog ?? null,
+    verdictReason: outcome?.reason ?? null,
+    simulated: true,
     pollAfterMs: finished ? 5000 : elapsed < 6000 ? 2000 : 5000,
     policyNote:
       s.contextType === 'EXAM'
@@ -846,7 +973,7 @@ function seedSubmission(
   const problem = findProblem(problemId)
   const version = readyVersion(problem) ?? problem.versions[0]
   const acceptedAtMs = now() - acceptedOffsetMs
-  const verdict = decideVerdict(source, false)
+  const verdict = judgeSource(problem, version, 'CPP17', source, false).verdict
   const failed = verdict === 'SYSTEM_ERROR'
   submissions.set(id, {
     id,
@@ -1062,7 +1189,10 @@ function route(
       language: 'CPP17',
       languages: ['CPP17', 'C11', 'PY3', 'JAVA17'],
       feedbackPolicy: 'FULL',
-      hasVisibleCases: version.cases.some((x) => x.isSample)
+      hasVisibleCases: version.cases.some((x) => x.isSample),
+      ownerName: users.find((u) => u.id === problem.ownerId)?.displayName ?? '教师',
+      organization: '软件工程学院',
+      fullScore: null
     }
     return detail
   }
@@ -1159,8 +1289,6 @@ function route(
       requestHash
     }
     submissions.set(id, record)
-    const verdictPreview = decideVerdict(code, false, language)
-    if (verdictPreview === 'SYSTEM_ERROR') record.status = 'QUEUED'
 
     const examRecord = exam ? examRecordFor(exam.id, user.id) : null
     if (exam && !examRecord) {
@@ -1187,6 +1315,7 @@ function route(
         const detail = submissionDetail(s, user)
         return {
           id: s.id,
+          problemId: s.problemId,
           problemTitle: detail.problemTitle,
           examTitle: detail.examTitle,
           contextType: s.contextType,
@@ -1300,7 +1429,10 @@ function route(
       language: exam.allowedLanguages[0] ?? 'CPP17',
       languages: exam.allowedLanguages,
       feedbackPolicy: 'VERDICT_ONLY',
-      hasVisibleCases: true
+      hasVisibleCases: true,
+      ownerName: users.find((u) => u.id === exam.ownerId)?.displayName ?? '教师',
+      organization: '软件工程学院',
+      fullScore: item.fullScore
     }
     return detail
   }

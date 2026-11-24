@@ -120,6 +120,13 @@ const peak = computed(() => {
         <div class="row gap-8">
           <StatusPill kind="submission" :value="detail.status" />
           <span v-if="detail.phase" class="badge badge--brand">{{ PHASE_LABEL[detail.phase] }}</span>
+          <span
+            v-if="detail.simulated"
+            class="badge badge--neutral"
+            title="当前是前端演示判题器，不是真实 sandbox 评测"
+          >
+            模拟判定
+          </span>
           <RouterLink
             v-if="detail.examId"
             class="btn btn--sm"
@@ -129,6 +136,11 @@ const peak = computed(() => {
           </RouterLink>
         </div>
       </header>
+
+      <div v-if="detail.verdictReason" class="alert alert--info mb-16">
+        <span class="alert__icon">i</span>
+        <span>{{ detail.verdictReason }}</span>
+      </div>
 
       <div class="meta-grid">
         <div class="meta">
@@ -255,7 +267,7 @@ const peak = computed(() => {
                     <td class="small">
                       <template v-if="item.expectedOutput !== null">
                         期望 <code>{{ item.expectedOutput }}</code> / 实际
-                        <code>{{ item.actualOutput ?? '（无输出）' }}</code>
+                        <code>{{ item.actualOutput ?? '（模拟判题未提供）' }}</code>
                       </template>
                       <span v-else class="faint">隐藏测试点不返回内容</span>
                     </td>
